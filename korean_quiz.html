@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>한글 받아쓰기 · v0</title>
+  <style>
+    :root { --card: #ffffff; --ink: #0f172a; --muted:#64748b; --accent:#111827; --ok:#10b981; --bad:#ef4444; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Noto Sans KR, Apple SD Gothic Neo, sans-serif; color: var(--ink); background: #f5f7fa; }
+    .wrap { max-width: 960px; margin: 0 auto; padding: 24px; }
+    header { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:16px; }
+    header h1 { margin:0; font-size: 20px; }
+    .toolbar { display:flex; gap:8px; flex-wrap:wrap; }
+    button, input, textarea { font: inherit; }
+    button { padding: 10px 14px; border-radius: 12px; border: 1px solid #e5e7eb; background: white; cursor: pointer; }
+    button.primary { background: black; color: white; }
+    button.ghost { background: #fff; }
+    button:active { transform: translateY(1px); }
+    .card { background: var(--card); border: 1px solid #e5e7eb; border-radius: 16px; padding: 16px; }
+    .stats { display:grid; grid-template-columns: repeat(3,1fr); gap:10px; margin-bottom:12px; }
+    .stat { text-align:center; border:1px solid #e5e7eb; border-radius:12px; padding:10px; background:white; }
+    .stat .val { font-weight:700; }
+    .big { display:flex; align-items:center; justify-content:center; height: 38vh; font-weight: 800; text-align:center; line-height:1.05; font-size: clamp(56px, 12vw, 160px); user-select:none; }
+    form.quiz { display:flex; gap:8px; margin-top:12px; }
+    form.quiz input[type=text] { flex:1; padding: 12px 14px; border-radius: 12px; border: 1px solid #cbd5e1; }
+    .feedback { margin-top:10px; padding:10px 12px; border-radius: 12px; }
+    .good { background:#ecfdf5; border:1px solid #a7f3d0; }
+    .bad { background:#fef2f2; border:1px solid #fecaca; }
+    details { margin-top: 16px; }
+    textarea { width:100%; height:140px; padding:12px; border-radius:12px; border:1px solid #cbd5e1; }
+    .grid2 { display:grid; grid-template-columns: 1fr 260px; gap:12px; }
+    @media (max-width: 800px) { .grid2 { grid-template-columns: 1fr; } }
+    .muted { color: var(--muted); font-size: 12px; }
+  </style>
+  <!-- React를 설치 없이 쓰기: CDN + Babel (학습용) -->
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+  <div class="wrap">
+    <div id="root"></div>
+  </div>
+
+  <script type="text/babel">
+    // ===== 유틸 =====
+    const STORAGE = 'hangul_dictation_v0';
+    const norm = (s='') => s.trim().toLowerCase().normalize('NFC').replace(/[\u200B-\u200D\uFEFF]/g,'');
+    const percent = (n,d)=> d? Math.round(n/d*100) : 0;
+
+    // ===== 기본 단어 (원하면 아래 배열을 비워 시작하세요) =====
+    const DEFAULT_WORDS = [
+      '아기','야구','유자','고기','기차','나무','바다','오리','치즈','포도','바나나','피아노'
+    ];
+
+    function load() {
+      try { return JSON.parse(localStorage.getItem(STORAGE)) || null; } catch { return null; }
+    }
+    function save(data) {
+      try { localStorage.setItem(STORAGE, JSON.stringify(data)); } catch {}
+    }
+
+    function useKoreanTTS() {
+      const [voice, setVoice] = React.useState(null);
+      React.useEffect(()=>{
+        const pick = () => {
+          const vs = window.speechSynthesis.getVoices();
+          const ko = vs.find(v=>/ko|Korean/i.test(v.lang));
+          setVoice(ko || vs[0] || null);
+        };
+        pick();
+        window.speechSynthesis.onvoiceschanged = pick;
+      },[]);
+      return (text, rate=0.9)=>{
+        if(!('speechSynthesis' in window)) return;
+        const u = new SpeechSynthesisUtterance(text);
+        if(voice) u.voice = voice;
+        u.lang = voice?.lang || 'ko-KR';
+        u.rate = rate; // 받아쓰기용으로 약간 느리게
+        window.speechSynthesis.cancel();
+        window.speechSynthesis.speak(u);
+      };
+    }
+
+    function App(){
+      const saved = load();
+      const [words, setWords] = React.useState(saved?.words?.length ? saved.words : DEFAULT_WORDS);
+      const [i, setI] = React.useState(saved?.i || 0);
+      const [inVal, setInVal] = React.useState('');
+      const [total, setTotal] = React.useState(saved?.total || 0);
+      const [correct, setCorrect] = React.useState(saved?.correct || 0);
+      const [feedback, setFeedback] = React.useState(null); // 'ok' | 'bad' | null
+      const [autoNext, setAutoNext] = React.useState(saved?.autoNext || false);
+      const [delay, setDelay] = React.useState(saved?.delay || 2500);
+      const say = useKoreanTTS();
+      const inputRef = React.useRef(null);
+
+      React.useEffect(()=>{ save({words, i, total, correct, autoNext, delay}); }, [words,i,total,correct,autoNext,delay]);
+
+      const cur = words.length ? words[i % words.length] : '단어 없음';
+
+      const play = ()=> say(cur);
+      const next = ()=> setI(v => (v+1)%words.length);
+
+      const onSubmit = (e)=>{
+        e.preventDefault();
+        if(!words.length) return;
+        const good = norm(inVal) === norm(cur);
+        setTotal(t=>t+1);
+        if(good) setCorrect(c=>c+1);
+        setFeedback(good ? 'ok' : 'bad');
+        if(good && autoNext) {
+          setTimeout(()=>{ setFeedback(null); setInVal(''); next(); play(); inputRef.current?.focus(); }, delay);
+        }
+      };
+
+      // 키보드 단축키: Space = 듣기, Enter=채점, → = 다음
+      React.useEffect(()=>{
+        const onKey=(e)=>{
+          if(e.code==='Space'){ e.preventDefault(); play(); }
+          if(e.key==='ArrowRight'){ e.preventDefault(); setFeedback(null); setInVal(''); next(); }
+        };
+        window.addEventListener('keydown', onKey);
+        return ()=>window.removeEventListener('keydown', onKey);
+      },[cur, words.length]);
+
+      const replaceFromTextarea = ()=>{
+        const text = document.getElementById('bulk').value || '';
+        const list = text.split(/[\n,\t]/).map(s=>s.trim()).filter(Boolean);
+        const uniq = Array.from(new Set(list));
+        if(uniq.length){ setWords(uniq); setI(0); setInVal(''); setFeedback(null); }
+      };
+
+      const dedup = ()=> setWords(v=>Array.from(new Set(v)));
+
+      const addWord = ()=>{
+        const v = prompt('추가할 단어(쉼표로 여러 개)');
+        if(!v) return;
+        const list = v.split(/[,\n\t]/).map(s=>s.trim()).filter(Boolean);
+        if(!list.length) return;
+        const merged = Array.from(new Set([...words, ...list]));
+        setWords(merged); setI(merged.length-1); setInVal(''); setFeedback(null);
+      };
+
+      const accuracy = percent(correct, total);
+
+      return (
+        <>
+          <header>
+            <h1>한글 낱말연습</h1>
+           
+          </header>
+          
+        
+          <div className="card">
+            <div className="muted">단어 카드</div>
+            <div className="big">{cur}</div>
+
+            <div className="toolbar">
+              <button onClick={play}>🔊 듣기</button>
+              <button onClick={()=>{ setFeedback(null); setInVal(''); setI(v => (v - 1 + words.length) % words.length); }}>← 이전</button>
+              <button onClick={()=>{ setFeedback(null); setInVal(''); next(); }}>다음 →</button>
+              <button onClick={addWord}>＋ 단어 추가</button>
+              <button onClick={dedup}>🧹 중복 제거</button>
+            </div>
+          </div>
+
+          <details>
+            <summary>단어 목록 붙여넣기/편집</summary>
+            <div className="grid2">
+              <div>
+                <textarea id="bulk" placeholder="쉼표(,) 또는 줄바꿈으로 단어들을 붙여넣으세요">{words.join('\n')}</textarea>
+              </div>
+              <div>
+                <button className="ghost" onClick={replaceFromTextarea}>이 목록으로 교체</button>
+                <div className="muted" style={{marginTop:8}}>현재 단어 수: <b>{words.length}</b></div>
+                <div className="muted">단축키: Space(듣기), →(다음)</div>
+              </div>
+            </div>
+          </details>
+
+          <p className="muted" style={{marginTop:16}}>
+            ✅ 팁: 이 파일을 휴대폰 홈화면에 추가하면 앱처럼 사용 가능. 브라우저에서 음성(TTS)을 허용해야 소리가 나옵니다.
+          </p>
+        </>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App/>);
+  </script>
+</body>
+</html>
